@@ -1,0 +1,35 @@
+# macOS
+.DS_Store
+
+# Xcode user data and build artifacts
+build/
+DerivedData/
+*.xcworkspace/xcuserdata/
+*.xcuserdatad/
+*.xcuserstate
+
+# Legacy Xcode user settings
+*.pbxuser
+!default.pbxuser
+*.mode1v3
+!default.mode1v3
+*.mode2v3
+!default.mode2v3
+*.perspectivev3
+!default.perspectivev3
+
+# Swift Package Manager
+.build/
+
+# Dependency managers
+Pods/
+Carthage/Build/
+
+# Fastlane outputs
+fastlane/report.xml
+fastlane/Preview.html
+fastlane/screenshots/**/*.png
+fastlane/test_output/
+
+# Local design references
+/reference.jpeg
