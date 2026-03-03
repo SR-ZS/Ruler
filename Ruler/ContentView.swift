@@ -2,17 +2,21 @@
 //  ContentView.swift
 //  Ruler
 //
-//  UIKit implementation for iOS 12+ support.
+//  UIKit implementation for iOS 13+ support.
 //
 
 import UIKit
 
-final class RulerViewController: UIViewController {
-    private let rulerView = RulerCanvasView()
-    private let unitControl = UISegmentedControl(items: ["cm", "inch"])
-    private let hintLabel = UILabel()
+final class RulerViewController: UIViewController, UIGestureRecognizerDelegate {
+    private struct AppliedScale: Equatable {
+        let pointsPerCentimeter: CGFloat
+    }
 
-    private var panStartOffset: CGPoint = .zero
+    private let rulerView = RulerCanvasView()
+    private let resetButton = UIButton(type: .system)
+
+    private var panStartOffsetY: CGFloat = 0
+    private var appliedScale: AppliedScale?
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -35,106 +39,146 @@ final class RulerViewController: UIViewController {
     }
 
     private func setupTopControls() {
-        unitControl.translatesAutoresizingMaskIntoConstraints = false
-        unitControl.selectedSegmentIndex = 0
-        unitControl.backgroundColor = UIColor(white: 0.18, alpha: 0.95)
-        if #available(iOS 13.0, *) {
-            unitControl.selectedSegmentTintColor = UIColor(white: 0.95, alpha: 1)
-            unitControl.setTitleTextAttributes([.foregroundColor: UIColor.black], for: .selected)
-            unitControl.setTitleTextAttributes([.foregroundColor: UIColor.white], for: .normal)
-        } else {
-            unitControl.tintColor = UIColor.white
-        }
-        unitControl.addTarget(self, action: #selector(unitChanged), for: .valueChanged)
+        resetButton.translatesAutoresizingMaskIntoConstraints = false
+        resetButton.setTitle("Reset", for: .normal)
+        resetButton.setTitleColor(.white, for: .normal)
+        resetButton.titleLabel?.font = UIFont.systemFont(ofSize: 14, weight: .semibold)
+        resetButton.backgroundColor = UIColor(white: 0.18, alpha: 0.95)
+        resetButton.layer.cornerRadius = 16
+        resetButton.contentEdgeInsets = UIEdgeInsets(top: 7, left: 14, bottom: 7, right: 14)
+        resetButton.addTarget(self, action: #selector(resetOffset), for: .touchUpInside)
+        resetButton.setContentCompressionResistancePriority(.required, for: .horizontal)
 
-        hintLabel.translatesAutoresizingMaskIntoConstraints = false
-        hintLabel.text = "Drag to move ruler • Double tap to reset"
-        hintLabel.font = UIFont.systemFont(ofSize: 12, weight: .medium)
-        hintLabel.textColor = UIColor(white: 0.75, alpha: 0.9)
-        hintLabel.textAlignment = .right
-
-        view.addSubview(unitControl)
-        view.addSubview(hintLabel)
+        view.addSubview(resetButton)
 
         let guide = view.safeAreaLayoutGuide
         NSLayoutConstraint.activate([
-            unitControl.topAnchor.constraint(equalTo: guide.topAnchor, constant: 8),
-            unitControl.trailingAnchor.constraint(equalTo: guide.trailingAnchor, constant: -10),
-            unitControl.widthAnchor.constraint(equalToConstant: 140),
-
-            hintLabel.centerYAnchor.constraint(equalTo: unitControl.centerYAnchor),
-            hintLabel.leadingAnchor.constraint(equalTo: guide.leadingAnchor, constant: 68),
-            hintLabel.trailingAnchor.constraint(equalTo: unitControl.leadingAnchor, constant: -8)
+            resetButton.centerXAnchor.constraint(equalTo: guide.centerXAnchor),
+            resetButton.bottomAnchor.constraint(equalTo: guide.bottomAnchor, constant: -24)
         ])
     }
 
     private func setupGestures() {
         let pan = UIPanGestureRecognizer(target: self, action: #selector(handlePan(_:)))
+        pan.delegate = self
+        pan.cancelsTouchesInView = false
         view.addGestureRecognizer(pan)
-
-        let doubleTap = UITapGestureRecognizer(target: self, action: #selector(resetOffset))
-        doubleTap.numberOfTapsRequired = 2
-        view.addGestureRecognizer(doubleTap)
     }
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
         applyCurrentScale()
+        rulerView.contentOffsetY = rulerView.clampedOffsetY(rulerView.contentOffsetY)
     }
 
     private func applyCurrentScale() {
-        let model = DeviceScaleModel.current
-        rulerView.deviceName = model.displayName
-        rulerView.pointsPerCentimeter = model.pointsPerCentimeter
-    }
+        let model = DeviceScaleModel.resolve(
+            identifier: DeviceIdentifier.current,
+            category: DeviceCategory.from(idiom: UIDevice.current.userInterfaceIdiom),
+            pixelsPerPoint: max(UIScreen.main.nativeScale, UIScreen.main.scale),
+            simulatorName: DeviceIdentifier.simulatorName
+        )
 
-    @objc private func unitChanged() {
-        rulerView.unitStyle = unitControl.selectedSegmentIndex == 0 ? .centimeter : .inch
+        let nextScale = AppliedScale(pointsPerCentimeter: model.pointsPerCentimeter)
+        guard nextScale != appliedScale else { return }
+
+        appliedScale = nextScale
+        rulerView.pointsPerCentimeter = model.pointsPerCentimeter
     }
 
     @objc private func handlePan(_ gesture: UIPanGestureRecognizer) {
         switch gesture.state {
         case .began:
-            panStartOffset = rulerView.contentOffset
+            panStartOffsetY = rulerView.contentOffsetY
         case .changed, .ended:
-            let t = gesture.translation(in: view)
-            rulerView.contentOffset = CGPoint(x: panStartOffset.x - t.x, y: panStartOffset.y - t.y)
+            let deltaY = gesture.translation(in: view).y
+            let nextOffset = panStartOffsetY - deltaY
+            rulerView.contentOffsetY = rulerView.clampedOffsetY(nextOffset)
         default:
             break
         }
     }
 
     @objc private func resetOffset() {
-        rulerView.contentOffset = .zero
+        rulerView.contentOffsetY = 0
+    }
+
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+        var currentView = touch.view
+        while let view = currentView {
+            if view is UIControl {
+                return false
+            }
+            currentView = view.superview
+        }
+        return true
     }
 }
 
 private final class RulerCanvasView: UIView {
-    enum UnitStyle {
-        case centimeter
-        case inch
+    private enum PanelAlignment {
+        case left
+        case right
+    }
 
-        var title: String {
-            switch self {
-            case .centimeter: return "cm"
-            case .inch: return "in"
-            }
-        }
-
-        var subdivisions: Int {
-            switch self {
-            case .centimeter: return 10
-            case .inch: return 16
+    var pointsPerCentimeter: CGFloat = 72 {
+        didSet {
+            if abs(pointsPerCentimeter - oldValue) > 0.0001 {
+                setNeedsDisplay()
             }
         }
     }
 
-    var pointsPerCentimeter: CGFloat = 72 { didSet { setNeedsDisplay() } }
-    var deviceName: String = "iPhone" { didSet { setNeedsDisplay() } }
-    var unitStyle: UnitStyle = .centimeter { didSet { setNeedsDisplay() } }
-    var contentOffset: CGPoint = .zero { didSet { setNeedsDisplay() } }
+    var contentOffsetY: CGFloat = 0 {
+        didSet {
+            if abs(contentOffsetY - oldValue) > 0.0001 {
+                setNeedsDisplay()
+            }
+        }
+    }
 
-    private let rulerThickness: CGFloat = 56
+    private let preferredPanelWidth: CGFloat = 68
+    private let panelSpacing: CGFloat = 16
+    private let sideInset: CGFloat = 10
+    private let topBottomInset: CGFloat = 8
+    private let maxCentimeters: CGFloat = 250
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        configureView()
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        configureView()
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        let clamped = clampedOffsetY(contentOffsetY)
+        if abs(clamped - contentOffsetY) > 0.0001 {
+            contentOffsetY = clamped
+        }
+    }
+
+    func clampedOffsetY(_ proposedOffset: CGFloat) -> CGFloat {
+        let upperBound = maximumOffsetY
+        return min(max(proposedOffset, 0), upperBound)
+    }
+
+    private var maximumOffsetY: CGFloat {
+        guard pointsPerCentimeter > 0 else { return 0 }
+        let contentFrame = scaleContentFrame(in: bounds)
+        let visibleHeight = max(contentFrame.height, 0)
+        let totalHeight = maxCentimeters * pointsPerCentimeter
+        return max(totalHeight - visibleHeight, 0)
+    }
+
+    private func configureView() {
+        backgroundColor = .black
+        isOpaque = true
+        contentMode = .redraw
+    }
 
     override func draw(_ rect: CGRect) {
         guard let ctx = UIGraphicsGetCurrentContext(), pointsPerCentimeter > 0 else { return }
@@ -142,215 +186,125 @@ private final class RulerCanvasView: UIView {
         UIColor.black.setFill()
         ctx.fill(rect)
 
-        drawRulerBackground(in: ctx, rect: rect)
-        drawHorizontalScale(in: ctx, rect: rect)
-        drawVerticalScale(in: ctx, rect: rect)
-        drawCrosshair(in: ctx, rect: rect)
-        drawCenterReadout(in: rect)
-        drawWatermark(in: rect)
+        let contentFrame = scaleContentFrame(in: rect)
+        guard contentFrame.width > 120, contentFrame.height > 100 else { return }
+
+        let panelWidth = min(preferredPanelWidth, max((contentFrame.width - panelSpacing) * 0.5, 48))
+        let leftPanel = CGRect(x: contentFrame.minX, y: contentFrame.minY, width: panelWidth, height: contentFrame.height)
+        let rightPanel = CGRect(x: contentFrame.maxX - panelWidth, y: contentFrame.minY, width: panelWidth, height: contentFrame.height)
+
+        drawScalePanelBackground(in: ctx, panel: leftPanel)
+        drawScalePanelBackground(in: ctx, panel: rightPanel)
+
+        drawVerticalScale(in: ctx, panel: leftPanel, unit: .centimeter, alignment: .left)
+        drawVerticalScale(in: ctx, panel: rightPanel, unit: .inch, alignment: .right)
     }
 
-    private var pointsPerUnit: CGFloat {
-        switch unitStyle {
-        case .centimeter:
-            return pointsPerCentimeter
-        case .inch:
-            return pointsPerCentimeter * 2.54
-        }
+    private func scaleContentFrame(in rect: CGRect) -> CGRect {
+        let insets = safeAreaInsets
+        return rect.inset(by: UIEdgeInsets(
+            top: insets.top + topBottomInset,
+            left: insets.left + sideInset,
+            bottom: insets.bottom + topBottomInset,
+            right: insets.right + sideInset
+        ))
     }
 
-    private func drawRulerBackground(in ctx: CGContext, rect: CGRect) {
-        let bg = UIColor(white: 0.10, alpha: 1)
-        bg.setFill()
-        ctx.fill(CGRect(x: 0, y: 0, width: rect.width, height: rulerThickness))
-        ctx.fill(CGRect(x: 0, y: 0, width: rulerThickness, height: rect.height))
+    private func drawScalePanelBackground(in ctx: CGContext, panel: CGRect) {
+        UIColor(white: 0.10, alpha: 1).setFill()
+        ctx.fill(panel)
 
         UIColor(white: 0.24, alpha: 1).setStroke()
         ctx.setLineWidth(1)
-        ctx.move(to: CGPoint(x: 0, y: rulerThickness))
-        ctx.addLine(to: CGPoint(x: rect.width, y: rulerThickness))
-        ctx.move(to: CGPoint(x: rulerThickness, y: 0))
-        ctx.addLine(to: CGPoint(x: rulerThickness, y: rect.height))
-        ctx.strokePath()
+        ctx.stroke(panel)
     }
 
-    private func drawHorizontalScale(in ctx: CGContext, rect: CGRect) {
-        let startX = rulerThickness
-        let endX = rect.width
-        let subdivisions = unitStyle.subdivisions
-        let minor = pointsPerUnit / CGFloat(subdivisions)
+    private func drawVerticalScale(in ctx: CGContext, panel: CGRect, unit: RulerUnit, alignment: PanelAlignment) {
+        let pointsPerUnit = RulerScaleMath.pointsPerUnit(pointsPerCentimeter: pointsPerCentimeter, unit: unit)
+        let subdivisions = unit.subdivisions
+        let minorStep = pointsPerUnit / CGFloat(subdivisions)
+        guard minorStep > 0 else { return }
 
         UIColor.white.withAlphaComponent(0.95).setStroke()
         ctx.setLineWidth(1)
 
-        let firstTick = Int(floor((contentOffset.x + startX) / minor)) - 1
-        let lastTick = Int(ceil((contentOffset.x + endX) / minor)) + 1
+        guard let tickRange = RulerScaleMath.minorTickRange(
+            offset: contentOffsetY,
+            viewportStart: 0,
+            viewportEnd: panel.height,
+            minorStep: minorStep
+        ) else { return }
 
-        for tick in firstTick...lastTick {
-            let x = CGFloat(tick) * minor - contentOffset.x
-            guard x >= startX - minor, x <= endX + minor else { continue }
+        let halfSubdivision = max(subdivisions / 2, 1)
+        for tick in tickRange {
+            if tick < 0 { continue }
+            let y = panel.minY + CGFloat(tick) * minorStep - contentOffsetY
+            guard y >= panel.minY - minorStep, y <= panel.maxY + minorStep else { continue }
 
             let tickLength: CGFloat
             if tick % subdivisions == 0 {
                 tickLength = 28
-            } else if tick % (subdivisions / 2) == 0 {
+            } else if tick % halfSubdivision == 0 {
                 tickLength = 20
             } else {
                 tickLength = 12
             }
 
-            ctx.move(to: CGPoint(x: x, y: 0))
-            ctx.addLine(to: CGPoint(x: x, y: tickLength))
-        }
-        ctx.strokePath()
-
-        let majorStart = Int(floor((contentOffset.x + startX) / pointsPerUnit)) - 1
-        let majorEnd = Int(ceil((contentOffset.x + endX) / pointsPerUnit)) + 1
-        let attrs: [NSAttributedString.Key: Any] = [
-            .font: UIFont.monospacedDigitSystemFont(ofSize: 14, weight: .regular),
-            .foregroundColor: UIColor.white.withAlphaComponent(0.92)
-        ]
-
-        for unit in majorStart...majorEnd {
-            let x = CGFloat(unit) * pointsPerUnit - contentOffset.x
-            guard x >= startX - pointsPerUnit, x <= endX + pointsPerUnit else { continue }
-            let text = "\(unit)" as NSString
-            let size = text.size(withAttributes: attrs)
-            text.draw(at: CGPoint(x: x - size.width / 2, y: 33), withAttributes: attrs)
-        }
-    }
-
-    private func drawVerticalScale(in ctx: CGContext, rect: CGRect) {
-        let startY = rulerThickness
-        let endY = rect.height
-        let subdivisions = unitStyle.subdivisions
-        let minor = pointsPerUnit / CGFloat(subdivisions)
-
-        UIColor.white.withAlphaComponent(0.95).setStroke()
-        ctx.setLineWidth(1)
-
-        let firstTick = Int(floor((contentOffset.y + startY) / minor)) - 1
-        let lastTick = Int(ceil((contentOffset.y + endY) / minor)) + 1
-
-        for tick in firstTick...lastTick {
-            let y = CGFloat(tick) * minor - contentOffset.y
-            guard y >= startY - minor, y <= endY + minor else { continue }
-
-            let tickLength: CGFloat
-            if tick % subdivisions == 0 {
-                tickLength = 28
-            } else if tick % (subdivisions / 2) == 0 {
-                tickLength = 20
-            } else {
-                tickLength = 12
+            switch alignment {
+            case .left:
+                ctx.move(to: CGPoint(x: panel.minX + 1, y: y))
+                ctx.addLine(to: CGPoint(x: panel.minX + tickLength, y: y))
+            case .right:
+                ctx.move(to: CGPoint(x: panel.maxX - 1, y: y))
+                ctx.addLine(to: CGPoint(x: panel.maxX - tickLength, y: y))
             }
-
-            ctx.move(to: CGPoint(x: 0, y: y))
-            ctx.addLine(to: CGPoint(x: tickLength, y: y))
         }
         ctx.strokePath()
 
-        let majorStart = Int(floor((contentOffset.y + startY) / pointsPerUnit)) - 1
-        let majorEnd = Int(ceil((contentOffset.y + endY) / pointsPerUnit)) + 1
+        guard let majorRange = RulerScaleMath.majorTickRange(
+            offset: contentOffsetY,
+            viewportStart: 0,
+            viewportEnd: panel.height,
+            pointsPerUnit: pointsPerUnit
+        ) else { return }
+
         let attrs: [NSAttributedString.Key: Any] = [
-            .font: UIFont.monospacedDigitSystemFont(ofSize: 14, weight: .regular),
+            .font: UIFont.monospacedDigitSystemFont(ofSize: 13, weight: .regular),
             .foregroundColor: UIColor.white.withAlphaComponent(0.92)
         ]
 
-        for unit in majorStart...majorEnd {
-            let y = CGFloat(unit) * pointsPerUnit - contentOffset.y
-            guard y >= startY - pointsPerUnit, y <= endY + pointsPerUnit else { continue }
-            let text = "\(unit)" as NSString
+        for major in majorRange {
+            if major < 0 { continue }
+            let y = panel.minY + CGFloat(major) * pointsPerUnit - contentOffsetY
+            guard y >= panel.minY - pointsPerUnit, y <= panel.maxY + pointsPerUnit else { continue }
+
+            let text = "\(major)" as NSString
             let size = text.size(withAttributes: attrs)
-            text.draw(at: CGPoint(x: 32, y: y - size.height / 2), withAttributes: attrs)
+            let x: CGFloat
+            switch alignment {
+            case .left:
+                x = panel.maxX - size.width - 8
+            case .right:
+                x = panel.minX + 8
+            }
+            text.draw(at: CGPoint(x: x, y: y - size.height / 2), withAttributes: attrs)
         }
-    }
 
-    private func drawCrosshair(in ctx: CGContext, rect: CGRect) {
-        let cross = CGPoint(x: rect.midX, y: rect.midY)
-
-        UIColor.systemGreen.withAlphaComponent(0.9).setStroke()
-        ctx.setLineWidth(1)
-
-        ctx.move(to: CGPoint(x: rulerThickness, y: cross.y))
-        ctx.addLine(to: CGPoint(x: rect.width, y: cross.y))
-        ctx.move(to: CGPoint(x: cross.x, y: rulerThickness))
-        ctx.addLine(to: CGPoint(x: cross.x, y: rect.height))
-        ctx.strokePath()
-
-        UIColor.systemGreen.withAlphaComponent(0.95).setFill()
-        ctx.fillEllipse(in: CGRect(x: cross.x - 3, y: cross.y - 3, width: 6, height: 6))
-    }
-
-    private func drawCenterReadout(in rect: CGRect) {
-        let originX = (rect.midX + contentOffset.x) / pointsPerUnit
-        let originY = (rect.midY + contentOffset.y) / pointsPerUnit
-
-        let text = String(format: "X %.2f %@   Y %.2f %@", originX, unitStyle.title, originY, unitStyle.title)
-        let attrs: [NSAttributedString.Key: Any] = [
-            .font: UIFont.monospacedDigitSystemFont(ofSize: 15, weight: .semibold),
+        let unitText = unit.title.uppercased() as NSString
+        let unitAttrs: [NSAttributedString.Key: Any] = [
+            .font: UIFont.systemFont(ofSize: 12, weight: .bold),
             .foregroundColor: UIColor.systemGreen.withAlphaComponent(0.95)
         ]
-
-        let label = text as NSString
-        let size = label.size(withAttributes: attrs)
-        label.draw(at: CGPoint(x: rect.midX - size.width / 2, y: rulerThickness + 12), withAttributes: attrs)
+        let unitSize = unitText.size(withAttributes: unitAttrs)
+        let unitX: CGFloat
+        switch alignment {
+        case .left:
+            unitX = panel.maxX - unitSize.width - 8
+        case .right:
+            unitX = panel.minX + 8
+        }
+        unitText.draw(at: CGPoint(x: unitX, y: panel.minY + 6), withAttributes: unitAttrs)
     }
-
-    private func drawWatermark(in rect: CGRect) {
-        let text = deviceName as NSString
-        let attrs: [NSAttributedString.Key: Any] = [
-            .font: UIFont.systemFont(ofSize: 30, weight: .medium),
-            .foregroundColor: UIColor(white: 0.65, alpha: 0.24)
-        ]
-        let size = text.size(withAttributes: attrs)
-        text.draw(at: CGPoint(x: rect.midX - size.width / 2, y: rect.midY - size.height / 2), withAttributes: attrs)
-    }
-}
-
-private struct DeviceScaleModel {
-    let displayName: String
-    let ppi: CGFloat
-
-    var pointsPerCentimeter: CGFloat {
-        let pixelsPerCentimeter = ppi / 2.54
-        return pixelsPerCentimeter / UIScreen.main.scale
-    }
-
-    static var current: DeviceScaleModel {
-        let identifier = DeviceIdentifier.current
-        let ppi = CGFloat(ppiByIdentifier[identifier] ?? 460)
-        let name = modelNameByIdentifier[identifier] ?? identifier
-        return DeviceScaleModel(displayName: name, ppi: ppi)
-    }
-
-    private static let modelNameByIdentifier: [String: String] = [
-        "iPhone15,2": "iPhone 14 Pro",
-        "iPhone15,3": "iPhone 14 Pro Max",
-        "iPhone15,4": "iPhone 15",
-        "iPhone15,5": "iPhone 15 Plus",
-        "iPhone16,1": "iPhone 15 Pro",
-        "iPhone16,2": "iPhone 15 Pro Max",
-        "iPhone17,1": "iPhone 16 Pro",
-        "iPhone17,2": "iPhone 16 Pro Max",
-        "iPhone17,3": "iPhone 16",
-        "iPhone17,4": "iPhone 16 Plus",
-        "iPhone17,5": "iPhone 16e"
-    ]
-
-    private static let ppiByIdentifier: [String: Int] = [
-        "iPhone15,2": 460,
-        "iPhone15,3": 460,
-        "iPhone15,4": 460,
-        "iPhone15,5": 460,
-        "iPhone16,1": 460,
-        "iPhone16,2": 460,
-        "iPhone17,1": 460,
-        "iPhone17,2": 460,
-        "iPhone17,3": 460,
-        "iPhone17,4": 460,
-        "iPhone17,5": 460
-    ]
 }
 
 private enum DeviceIdentifier {
@@ -366,5 +320,33 @@ private enum DeviceIdentifier {
             output.append(String(UnicodeScalar(UInt8(value))))
         }
 #endif
+    }
+
+    static var simulatorName: String? {
+#if targetEnvironment(simulator)
+        return ProcessInfo.processInfo.environment["SIMULATOR_DEVICE_NAME"]
+#else
+        return nil
+#endif
+    }
+}
+
+private extension DeviceCategory {
+    static func from(idiom: UIUserInterfaceIdiom) -> DeviceCategory {
+        switch idiom {
+        case .phone:
+            return .phone
+        case .pad:
+            return .pad
+        case .tv:
+            return .tv
+        case .carPlay:
+            return .unknown
+        default:
+            if #available(iOS 14.0, *), idiom == .mac {
+                return .mac
+            }
+            return .unknown
+        }
     }
 }
