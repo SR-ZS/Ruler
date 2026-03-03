@@ -14,6 +14,7 @@ final class RulerViewController: UIViewController, UIGestureRecognizerDelegate {
 
     private let rulerView = RulerCanvasView()
     private let resetButton = UIButton(type: .system)
+    private var resetButtonCenterYConstraint: NSLayoutConstraint?
 
     private var panStartOffsetY: CGFloat = 0
     private var appliedScale: AppliedScale?
@@ -42,19 +43,24 @@ final class RulerViewController: UIViewController, UIGestureRecognizerDelegate {
         resetButton.translatesAutoresizingMaskIntoConstraints = false
         resetButton.setTitle("Reset", for: .normal)
         resetButton.setTitleColor(.white, for: .normal)
-        resetButton.titleLabel?.font = UIFont.systemFont(ofSize: 14, weight: .semibold)
+        resetButton.titleLabel?.font = UIFont.systemFont(ofSize: 20, weight: .bold)
         resetButton.backgroundColor = UIColor(white: 0.18, alpha: 0.95)
-        resetButton.layer.cornerRadius = 16
-        resetButton.contentEdgeInsets = UIEdgeInsets(top: 7, left: 14, bottom: 7, right: 14)
+        resetButton.layer.cornerRadius = 26
+        resetButton.contentEdgeInsets = UIEdgeInsets(top: 14, left: 30, bottom: 14, right: 30)
         resetButton.addTarget(self, action: #selector(resetOffset), for: .touchUpInside)
         resetButton.setContentCompressionResistancePriority(.required, for: .horizontal)
+        resetButton.setContentHuggingPriority(.required, for: .horizontal)
 
         view.addSubview(resetButton)
 
         let guide = view.safeAreaLayoutGuide
+        let centerYConstraint = resetButton.centerYAnchor.constraint(equalTo: guide.topAnchor)
+        resetButtonCenterYConstraint = centerYConstraint
         NSLayoutConstraint.activate([
             resetButton.centerXAnchor.constraint(equalTo: guide.centerXAnchor),
-            resetButton.bottomAnchor.constraint(equalTo: guide.bottomAnchor, constant: -24)
+            centerYConstraint,
+            resetButton.heightAnchor.constraint(greaterThanOrEqualToConstant: 60),
+            resetButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 160)
         ])
     }
 
@@ -67,6 +73,8 @@ final class RulerViewController: UIViewController, UIGestureRecognizerDelegate {
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
+        let safeHeight = view.safeAreaLayoutGuide.layoutFrame.height
+        resetButtonCenterYConstraint?.constant = safeHeight * 0.75
         applyCurrentScale()
         rulerView.contentOffsetY = rulerView.clampedOffsetY(rulerView.contentOffsetY)
     }
