@@ -7,15 +7,96 @@
 
 import UIKit
 
-final class RulerViewController: UIViewController, UIGestureRecognizerDelegate {
+protocol ResettableModeController: UIViewController {
+    func handleResetAction()
+}
+
+final class RulerViewController: UIViewController {
+    private let containerView = UIView()
+    private let resetButton = UIButton(type: .system)
+    private var resetButtonCenterYConstraint: NSLayoutConstraint?
+
+    private let rulerModeViewController = RulerModeViewController()
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+
+        view.backgroundColor = .black
+
+        setupContainerView()
+        setupResetButton()
+        showRulerModeIfNeeded()
+    }
+
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        let safeHeight = view.safeAreaLayoutGuide.layoutFrame.height
+        resetButtonCenterYConstraint?.constant = safeHeight * 0.75
+    }
+
+    private func setupContainerView() {
+        containerView.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(containerView)
+
+        NSLayoutConstraint.activate([
+            containerView.topAnchor.constraint(equalTo: view.topAnchor),
+            containerView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            containerView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            containerView.bottomAnchor.constraint(equalTo: view.bottomAnchor)
+        ])
+    }
+
+    private func setupResetButton() {
+        resetButton.translatesAutoresizingMaskIntoConstraints = false
+        resetButton.setTitle("Reset", for: .normal)
+        resetButton.setTitleColor(.white, for: .normal)
+        resetButton.titleLabel?.font = UIFont.systemFont(ofSize: 20, weight: .bold)
+        resetButton.backgroundColor = UIColor(white: 0.18, alpha: 0.95)
+        resetButton.layer.cornerRadius = 26
+        resetButton.contentEdgeInsets = UIEdgeInsets(top: 14, left: 30, bottom: 14, right: 30)
+        resetButton.setContentCompressionResistancePriority(.required, for: .horizontal)
+        resetButton.setContentHuggingPriority(.required, for: .horizontal)
+        resetButton.addTarget(self, action: #selector(resetTapped), for: .touchUpInside)
+
+        view.addSubview(resetButton)
+
+        let guide = view.safeAreaLayoutGuide
+        let centerYConstraint = resetButton.centerYAnchor.constraint(equalTo: guide.topAnchor)
+        resetButtonCenterYConstraint = centerYConstraint
+        NSLayoutConstraint.activate([
+            resetButton.centerXAnchor.constraint(equalTo: guide.centerXAnchor),
+            centerYConstraint,
+            resetButton.heightAnchor.constraint(greaterThanOrEqualToConstant: 60),
+            resetButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 160)
+        ])
+    }
+
+    @objc private func resetTapped() {
+        rulerModeViewController.handleResetAction()
+    }
+
+    private func showRulerModeIfNeeded() {
+        guard rulerModeViewController.parent == nil else { return }
+
+        addChild(rulerModeViewController)
+        rulerModeViewController.view.translatesAutoresizingMaskIntoConstraints = false
+        containerView.addSubview(rulerModeViewController.view)
+        NSLayoutConstraint.activate([
+            rulerModeViewController.view.topAnchor.constraint(equalTo: containerView.topAnchor),
+            rulerModeViewController.view.leadingAnchor.constraint(equalTo: containerView.leadingAnchor),
+            rulerModeViewController.view.trailingAnchor.constraint(equalTo: containerView.trailingAnchor),
+            rulerModeViewController.view.bottomAnchor.constraint(equalTo: containerView.bottomAnchor)
+        ])
+        rulerModeViewController.didMove(toParent: self)
+    }
+}
+
+final class RulerModeViewController: UIViewController, ResettableModeController {
     private struct AppliedScale: Equatable {
         let pointsPerCentimeter: CGFloat
     }
 
     private let rulerView = RulerCanvasView()
-    private let resetButton = UIButton(type: .system)
-    private var resetButtonCenterYConstraint: NSLayoutConstraint?
-
     private var panStartOffsetY: CGFloat = 0
     private var appliedScale: AppliedScale?
 
@@ -34,64 +115,19 @@ final class RulerViewController: UIViewController, UIGestureRecognizerDelegate {
             rulerView.bottomAnchor.constraint(equalTo: view.bottomAnchor)
         ])
 
-        setupTopControls()
-        setupGestures()
-        applyCurrentScale()
-    }
-
-    private func setupTopControls() {
-        resetButton.translatesAutoresizingMaskIntoConstraints = false
-        resetButton.setTitle("Reset", for: .normal)
-        resetButton.setTitleColor(.white, for: .normal)
-        resetButton.titleLabel?.font = UIFont.systemFont(ofSize: 20, weight: .bold)
-        resetButton.backgroundColor = UIColor(white: 0.18, alpha: 0.95)
-        resetButton.layer.cornerRadius = 26
-        resetButton.contentEdgeInsets = UIEdgeInsets(top: 14, left: 30, bottom: 14, right: 30)
-        resetButton.addTarget(self, action: #selector(resetOffset), for: .touchUpInside)
-        resetButton.setContentCompressionResistancePriority(.required, for: .horizontal)
-        resetButton.setContentHuggingPriority(.required, for: .horizontal)
-
-        view.addSubview(resetButton)
-
-        let guide = view.safeAreaLayoutGuide
-        let centerYConstraint = resetButton.centerYAnchor.constraint(equalTo: guide.topAnchor)
-        resetButtonCenterYConstraint = centerYConstraint
-        NSLayoutConstraint.activate([
-            resetButton.centerXAnchor.constraint(equalTo: guide.centerXAnchor),
-            centerYConstraint,
-            resetButton.heightAnchor.constraint(greaterThanOrEqualToConstant: 60),
-            resetButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 160)
-        ])
-    }
-
-    private func setupGestures() {
         let pan = UIPanGestureRecognizer(target: self, action: #selector(handlePan(_:)))
-        pan.delegate = self
-        pan.cancelsTouchesInView = false
         view.addGestureRecognizer(pan)
+        applyCurrentScale()
     }
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
-        let safeHeight = view.safeAreaLayoutGuide.layoutFrame.height
-        resetButtonCenterYConstraint?.constant = safeHeight * 0.75
         applyCurrentScale()
         rulerView.contentOffsetY = rulerView.clampedOffsetY(rulerView.contentOffsetY)
     }
 
-    private func applyCurrentScale() {
-        let model = DeviceScaleModel.resolve(
-            identifier: DeviceIdentifier.current,
-            category: DeviceCategory.from(idiom: UIDevice.current.userInterfaceIdiom),
-            pixelsPerPoint: max(UIScreen.main.nativeScale, UIScreen.main.scale),
-            simulatorName: DeviceIdentifier.simulatorName
-        )
-
-        let nextScale = AppliedScale(pointsPerCentimeter: model.pointsPerCentimeter)
-        guard nextScale != appliedScale else { return }
-
-        appliedScale = nextScale
-        rulerView.pointsPerCentimeter = model.pointsPerCentimeter
+    func handleResetAction() {
+        rulerView.contentOffsetY = 0
     }
 
     @objc private func handlePan(_ gesture: UIPanGestureRecognizer) {
@@ -107,19 +143,19 @@ final class RulerViewController: UIViewController, UIGestureRecognizerDelegate {
         }
     }
 
-    @objc private func resetOffset() {
-        rulerView.contentOffsetY = 0
-    }
+    private func applyCurrentScale() {
+        let model = DeviceScaleModel.resolve(
+            identifier: DeviceIdentifier.current,
+            category: DeviceCategory.from(idiom: UIDevice.current.userInterfaceIdiom),
+            pixelsPerPoint: max(UIScreen.main.nativeScale, UIScreen.main.scale),
+            simulatorName: DeviceIdentifier.simulatorName
+        )
 
-    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
-        var currentView = touch.view
-        while let view = currentView {
-            if view is UIControl {
-                return false
-            }
-            currentView = view.superview
-        }
-        return true
+        let nextScale = AppliedScale(pointsPerCentimeter: model.pointsPerCentimeter)
+        guard nextScale != appliedScale else { return }
+
+        appliedScale = nextScale
+        rulerView.pointsPerCentimeter = model.pointsPerCentimeter
     }
 }
 
